@@ -65,15 +65,20 @@ def github_update_file(path, content, sha, message):
 def analizar_foto(image_bytes, division_label):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
     
-    prompt = f"""Analizá esta planilla de resultados de rugby de la división {division_label}.
-Extraé SOLO los partidos jugados con sus scores.
-Respondé ÚNICAMENTE con un JSON array, sin texto adicional, sin markdown, sin explicaciones.
+    prompt = f"""Analizá esta imagen que contiene resultados de rugby de la división {division_label}.
+Puede ser una foto de planilla, captura de pantalla de una app, foto de pizarra, o cualquier formato.
+Extraé TODOS los partidos con resultado final (score numérico).
+
+Respondé ÚNICAMENTE con un JSON array válido, sin texto adicional, sin markdown, sin bloques de código.
+El primer equipo listado es el local (home), el segundo es el visitante (away).
+
 Formato exacto:
 [
   {{"home": "Nombre Club Local", "hs": 24, "away": "Nombre Club Visitante", "as": 18}},
   {{"home": "Nombre Club Local", "hs": 10, "away": "Nombre Club Visitante", "as": 31}}
 ]
-Si no encontrás resultados claros, respondé: []"""
+
+Si no hay ningún resultado claro, respondé solamente: []"""
 
     img_b64 = base64.b64encode(image_bytes).decode()
     payload = {
