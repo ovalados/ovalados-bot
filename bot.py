@@ -14,7 +14,7 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GEMINI_KEY     = os.environ["GEMINI_KEY"]
 GITHUB_TOKEN   = os.environ["GITHUB_TOKEN"]
 GITHUB_REPO    = os.environ.get("GITHUB_REPO", "ovalados/ovalados-sitio")
-ALLOWED_USER   = int(os.environ.get("ALLOWED_USER", "0"))  # Tu Telegram user ID
+ALLOWED_USER   = int(os.environ.get("ALLOWED_USER", "0"))
 
 # ── Divisiones disponibles ────────────────────────────────
 DIVISIONES = {
@@ -33,16 +33,12 @@ DIVISION_LABELS = {
     "preintermedia_d": "Pre-Intermedia D",
 }
 
-# ── Estado conversacional ─────────────────────────────────
 user_state = {}
 
 # ── GitHub API ────────────────────────────────────────────
 def github_get_file(path):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
-    }
+    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
     r = requests.get(url, headers=headers)
     if r.status_code == 200:
         data = r.json()
@@ -52,57 +48,67 @@ def github_get_file(path):
 
 def github_update_file(path, content, sha, message):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
-    }
+    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
     encoded = base64.b64encode(json.dumps(content, ensure_ascii=False, indent=2).encode()).decode()
     payload = {"message": message, "content": encoded, "sha": sha}
     r = requests.put(url, headers=headers, json=payload)
     return r.status_code in [200, 201]
 
 # ── Gemini Vision ─────────────────────────────────────────
-def analizar_foto(image_bytes, division_label):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
-    
-    prompt = f"""Analizá esta imagen que contiene resultados de rugby de la división {division_label}.
-Puede ser una foto de planilla, captura de pantalla de una app, foto de pizarra, o cualquier formato.
-Extraé TODOS los partidos con resultado final (score numérico).
-
-Respondé ÚNICAMENTE con un JSON array válido, sin texto adicional, sin markdown, sin bloques de código.
-El primer equipo listado es el local (home), el segundo es el visitante (away).
-
-Formato exacto:
-[
-  {{"home": "Nombre Club Local", "hs": 24, "away": "Nombre Club Visitante", "as": 18}},
-  {{"home": "Nombre Club Local", "hs": 10, "away": "Nombre Club Visitante", "as": 31}}
+GEMINI_MODELS = [
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
 ]
 
-Si no hay ningún resultado claro, respondé solamente: []"""
+def analizar_foto(image_bytes, division_label):
+    prompt = f"""Analizá esta imagen con resultados de rugby de la división {division_label}.
+Puede ser captura de pantalla, foto de planilla, pizarra, o cualquier formato.
+Extraé todos los partidos con score final.
+
+Respondé SOLO con un JSON array válido. Sin texto, sin markdown, sin bloques de código.
+Formato:
+[{{"home": "Club Local", "hs": 24, "away": "Club Visitante", "as": 18}}]
+
+Si no hay resultados claros respondé: []"""
 
     img_b64 = base64.b64encode(image_bytes).decode()
     payload = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}}
-            ]
-        }]
+        "contents": [{"parts": [
+            {"text": prompt},
+            {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}}
+        ]}],
+        "generationConfig": {"temperature": 0.1}
     }
-    
-    r = requests.post(url, json=payload, timeout=30)
-    if r.status_code != 200:
-        logger.error(f"Gemini error: {r.text}")
-        return []
-    
-    text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-    text = re.sub(r'```json\s*|\s*```', '', text).strip()
-    
-    try:
-        return json.loads(text)
-    except:
-        logger.error(f"Error parseando Gemini response: {text}")
-        return []
+
+    for model in GEMINI_MODELS:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
+        try:
+            r = requests.post(url, json=payload, timeout=30)
+            logger.info(f"Gemini {model}: status {r.status_code}")
+            if r.status_code == 404:
+                continue
+            if r.status_code != 200:
+                logger.error(f"Gemini {model} error: {r.text[:200]}")
+                continue
+
+            text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            logger.info(f"Gemini response: {text[:200]}")
+
+            # Limpiar markdown si viene
+            text = re.sub(r'```(?:json)?\s*|\s*```', '', text).strip()
+            # Extraer solo el array JSON si hay texto extra
+            m = re.search(r'\[[\s\S]*\]', text)
+            if m:
+                text = m.group(0)
+
+            return json.loads(text)
+        except Exception as e:
+            logger.error(f"Gemini {model} exception: {e}")
+            continue
+
+    return []
 
 # ── Handlers ──────────────────────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -110,9 +116,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ No autorizado.")
         return
     await update.message.reply_text(
-        "🏉 *Ovalados Bot*\n\n"
-        "Mandame una foto de la planilla y te ayudo a cargar los resultados.\n\n"
-        "Primero decime la división:",
+        "🏉 *Ovalados Bot*\n\nMandame una foto y te ayudo a cargar los resultados.\n\nPrimero elegí la división:",
         parse_mode="Markdown",
         reply_markup=division_keyboard()
     )
@@ -126,43 +130,39 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     uid = query.from_user.id
-    
+
     if query.data.startswith("div_"):
         div = query.data[4:]
         user_state[uid] = {"division": div, "step": "waiting_photo"}
         await query.edit_message_text(
-            f"✓ División: *{DIVISION_LABELS[div]}*\n\nAhora mandame la foto de la planilla.",
+            f"✓ División: *{DIVISION_LABELS[div]}*\n\nAhora mandame la foto.",
             parse_mode="Markdown"
         )
-    
+
     elif query.data == "confirmar":
         state = user_state.get(uid, {})
         if not state.get("resultados"):
             await query.edit_message_text("❌ No hay resultados para guardar.")
             return
-        
+
         div = state["division"]
         resultados = state["resultados"]
         json_key = DIVISIONES[div]
         path = f"data/{json_key}.json"
-        
+
         await query.edit_message_text("⏳ Guardando en GitHub...")
-        
+
         data, sha = github_get_file(path)
         if data is None:
-            # Crear archivo nuevo
             data = {"teams": [], "matches": {}, "lastUpdate": ""}
-            sha = None
-        
-        # Buscar la fecha actual y agregar resultados
+
         from datetime import datetime, timezone
         updated = 0
         for r in resultados:
-            # Buscar en matches el partido correspondiente
             for rnd, rd in data.get("matches", {}).items():
                 ms = rd.get("ms") or rd.get("matches") or []
                 for m in ms:
-                    if (m.get("home","").lower() == r["home"].lower() and 
+                    if (m.get("home","").lower() == r["home"].lower() and
                         m.get("away","").lower() == r["away"].lower() and
                         not m.get("played")):
                         m["hs"] = r["hs"]
@@ -170,36 +170,31 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         m["played"] = True
                         updated += 1
                         break
-        
+
         data["lastUpdate"] = datetime.now(timezone.utc).isoformat()
-        
-        # Si no encontró partidos en fixture, agregar como resultados libres
+
         if updated == 0:
             if "results" not in data:
                 data["results"] = []
             data["results"].extend(resultados)
             updated = len(resultados)
-        
-        ok = github_update_file(
-            path, data, sha or "new",
-            f"🏉 {DIVISION_LABELS[div]}: {updated} resultado(s) cargado(s)"
-        )
-        
+
+        ok = github_update_file(path, data, sha, f"🏉 {DIVISION_LABELS[div]}: {updated} resultado(s)")
+
         if ok:
             await query.edit_message_text(
-                f"✅ *{updated} resultado(s) guardado(s)* en {DIVISION_LABELS[div]}!\n\n"
-                f"Netlify va a actualizar el sitio en ~1 minuto.",
+                f"✅ *{updated} resultado(s) guardado(s)* en {DIVISION_LABELS[div]}!\n\nEl sitio se actualiza en ~1 minuto.",
                 parse_mode="Markdown"
             )
         else:
             await query.edit_message_text("❌ Error al guardar en GitHub. Intentá de nuevo.")
-        
+
         user_state.pop(uid, None)
-    
+
     elif query.data == "cancelar":
         user_state.pop(uid, None)
         await query.edit_message_text("❌ Cancelado.")
-    
+
     elif query.data == "reintentar":
         state = user_state.get(uid, {})
         state["step"] = "waiting_photo"
@@ -211,47 +206,42 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USER and update.effective_user.id != ALLOWED_USER:
         return
-    
+
     uid = update.effective_user.id
     state = user_state.get(uid, {})
-    
+
     if state.get("step") != "waiting_photo":
-        await update.message.reply_text(
-            "Primero elegí la división con /start",
-            reply_markup=division_keyboard()
-        )
+        await update.message.reply_text("Primero elegí la división con /start", reply_markup=division_keyboard())
         return
-    
-    await update.message.reply_text("🔍 Analizando la planilla...")
-    
-    # Descargar foto
+
+    msg = await update.message.reply_text("🔍 Analizando...")
+
     photo = update.message.photo[-1]
     file = await ctx.bot.get_file(photo.file_id)
     img_bytes = bytes(await file.download_as_bytearray())
-    
+
     div = state["division"]
     resultados = analizar_foto(img_bytes, DIVISION_LABELS[div])
-    
+
     if not resultados:
-        await update.message.reply_text(
-            "❌ No pude leer resultados de la imagen. ¿Querés intentar de nuevo?",
+        await msg.edit_text(
+            "❌ No pude leer resultados. ¿Intentamos de nuevo?",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("📷 Reintentar", callback_data="reintentar"),
                 InlineKeyboardButton("❌ Cancelar", callback_data="cancelar")
             ]])
         )
         return
-    
-    # Mostrar resultados para confirmar
+
     user_state[uid]["resultados"] = resultados
     user_state[uid]["step"] = "confirming"
-    
-    lines = [f"*{DIVISION_LABELS[div]}* — Resultados encontrados:\n"]
+
+    lines = [f"*{DIVISION_LABELS[div]}* — Resultados:\n"]
     for r in resultados:
-        lines.append(f"• {r['home']} {r['hs']} — {r['as']} {r['away']}")
+        lines.append(f"• {r['home']} *{r['hs']}* — *{r['as']}* {r['away']}")
     lines.append("\n¿Son correctos?")
-    
-    await update.message.reply_text(
+
+    await msg.edit_text(
         "\n".join(lines),
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
@@ -263,10 +253,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USER and update.effective_user.id != ALLOWED_USER:
         return
-    await update.message.reply_text(
-        "Mandame una foto de la planilla, o usá /start para elegir la división.",
-        reply_markup=division_keyboard()
-    )
+    await update.message.reply_text("Mandame una foto, o usá /start para elegir la división.", reply_markup=division_keyboard())
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
