@@ -63,7 +63,7 @@ def github_update_file(path, content, sha, message):
 
 # ── Gemini Vision ─────────────────────────────────────────
 def analizar_foto(image_bytes, division_label):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
     
     prompt = f"""Analizá esta imagen que contiene resultados de rugby de la división {division_label}.
 Puede ser una foto de planilla, captura de pantalla de una app, foto de pizarra, o cualquier formato.
